@@ -19,8 +19,6 @@ class DocumentProcessor:
             # If UTF-8 fails, try with error handling
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
                 return file.read()
-    
-
 
     def chunk_text(self, text: str) -> List[str]:
         """Split text into sentence-based chunks with overlap using config settings"""
@@ -89,10 +87,6 @@ class DocumentProcessor:
                 i += 1
         
         return chunks
-
-
-
-
     
     def process_course_document(self, file_path: str) -> Tuple[Course, List[CourseChunk]]:
         """
