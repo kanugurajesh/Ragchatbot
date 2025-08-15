@@ -5,40 +5,30 @@ import json
 class AIGenerator:
     """Handles interactions with Google Gemini API for generating responses"""
     
-    # Static system prompt to avoid rebuilding on each call
-    SYSTEM_PROMPT = """ You are an AI assistant specialized in course materials and educational content with access to a comprehensive search tool for course information.
+    # Simplified system prompt to avoid safety issues
+    SYSTEM_PROMPT = """You are a helpful educational assistant that helps with course materials and content questions. 
 
-Search Tool Usage:
-- Use the search tool **only** for questions about specific course content or detailed educational materials
-- **One search per query maximum**
-- Synthesize search results into accurate, fact-based responses
-- If search yields no results, state this clearly without offering alternatives
-
-Response Protocol:
-- **General knowledge questions**: Answer using existing knowledge without searching
-- **Course-specific questions**: Search first, then answer
-- **No meta-commentary**:
- - Provide direct answers only — no reasoning process, search explanations, or question-type analysis
- - Do not mention "based on the search results"
-
-
-All responses must be:
-1. **Brief, Concise and focused** - Get to the point quickly
-2. **Educational** - Maintain instructional value
-3. **Clear** - Use accessible language
-4. **Example-supported** - Include relevant examples when they aid understanding
-Provide only the direct answer to what was asked.
-"""
+You can search course content and provide course outlines when asked. Always be helpful, accurate, and concise in your responses."""
     
     def __init__(self, api_key: str, model: str):
         # Configure Gemini API
         genai.configure(api_key=api_key)
+        
+        # Configure safety settings to be minimal for educational content
+        safety_settings = {
+            genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: genai.types.HarmBlockThreshold.BLOCK_NONE,
+            genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+            genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+            genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+        }
+        
         self.model = genai.GenerativeModel(
             model_name=model,
             generation_config=genai.types.GenerationConfig(
                 temperature=0,
                 max_output_tokens=800,
             ),
+            safety_settings=safety_settings,
             system_instruction=self.SYSTEM_PROMPT
         )
     
@@ -77,9 +67,17 @@ Provide only the direct answer to what was asked.
             if gemini_tools and tool_manager:
                 return self._generate_with_tools(full_prompt, gemini_tools, tool_manager)
             else:
+                # Configure safety settings for non-tool responses
+                safety_settings = {
+                    genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: genai.types.HarmBlockThreshold.BLOCK_NONE,
+                    genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+                    genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+                    genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+                }
+                
                 # Generate without tools
-                response = self.model.generate_content(full_prompt)
-                return response.text
+                response = self.model.generate_content(full_prompt, safety_settings=safety_settings)
+                return self._extract_response_text(response)
                 
         except Exception as e:
             return f"I apologize, but I encountered an error while processing your request: {str(e)}"
@@ -127,9 +125,17 @@ Provide only the direct answer to what was asked.
     def _generate_with_tools(self, prompt: str, tools: List, tool_manager) -> str:
         """Generate response with function calling capability"""
         try:
+            # Configure safety settings for chat as well
+            safety_settings = {
+                genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: genai.types.HarmBlockThreshold.BLOCK_NONE,
+                genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+                genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+                genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+            }
+            
             # Start chat with tools
             chat = self.model.start_chat(tools=tools)
-            response = chat.send_message(prompt)
+            response = chat.send_message(prompt, safety_settings=safety_settings)
             
             # Check if the model wants to use a function
             if response.candidates[0].content.parts:
@@ -151,11 +157,68 @@ Provide only the direct answer to what was asked.
                         )
                         
                         # Get final response
-                        final_response = chat.send_message(function_response)
-                        return final_response.text
+                        final_response = chat.send_message(function_response, safety_settings=safety_settings)
+                        return self._extract_response_text(final_response)
             
             # If no function call, return the direct response
-            return response.text
+            return self._extract_response_text(response)
             
         except Exception as e:
             return f"I encountered an error while processing your request: {str(e)}"
+    
+    def _extract_response_text(self, response) -> str:
+        """
+        Safely extract text from Gemini response, handling cases where response is blocked.
+        
+        Args:
+            response: Gemini response object
+            
+        Returns:
+            Response text or appropriate error message
+        """
+        try:
+            # Check if response has candidates
+            if not response.candidates:
+                return "I apologize, but I couldn't generate a response. Please try rephrasing your question."
+            
+            candidate = response.candidates[0]
+            
+            # Check finish reason for safety blocks
+            if hasattr(candidate, 'finish_reason'):
+                if candidate.finish_reason == 12:  # SAFETY
+                    # Get more details about the safety ratings
+                    safety_ratings = getattr(candidate, 'safety_ratings', [])
+                    blocked_categories = []
+                    for rating in safety_ratings:
+                        if hasattr(rating, 'category') and hasattr(rating, 'probability'):
+                            if rating.probability.name in ['HIGH', 'MEDIUM']:
+                                blocked_categories.append(rating.category.name)
+                    
+                    if blocked_categories:
+                        return f"Response blocked due to safety filters. Categories: {', '.join(blocked_categories)}. This appears to be a false positive for educational content."
+                    else:
+                        return "Response blocked by safety filters. This appears to be a false positive for educational content."
+                elif candidate.finish_reason == 3:  # RECITATION
+                    return "Response blocked due to potential recitation. Please try rephrasing your question."
+                elif candidate.finish_reason not in [1, None]:  # 1 = STOP (normal completion)
+                    return f"Response incomplete (finish_reason: {candidate.finish_reason}). Please try again."
+            
+            # Check if content exists and has parts
+            if hasattr(candidate, 'content') and candidate.content and candidate.content.parts:
+                # Extract text from parts
+                text_parts = []
+                for part in candidate.content.parts:
+                    if hasattr(part, 'text') and part.text:
+                        text_parts.append(part.text)
+                
+                if text_parts:
+                    return ''.join(text_parts)
+            
+            # Fallback: try direct text access
+            if hasattr(response, 'text') and response.text:
+                return response.text
+            
+            return "I apologize, but I couldn't generate a response. Please try again."
+            
+        except Exception as e:
+            return f"I apologize, but I encountered an error while processing the response: {str(e)}"
