@@ -1,4 +1,4 @@
-# Course Materials RAG System
+# RAG System
 
 A Retrieval-Augmented Generation (RAG) system designed to answer questions about course materials using semantic search and AI-powered responses.
 
